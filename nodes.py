@@ -124,7 +124,6 @@ class SAM3TrackToTracks:
         return (tracks,)
 
 
-
 # ---- 2) export: one consolidated file, json | csv | svg ---------------------
 
 class EasyTracksExport:
@@ -135,7 +134,12 @@ class EasyTracksExport:
                 "tracks": ("TRACKS",),
                 "filename_prefix": ("STRING", {"default": "tracks"}),
                 "format": (["json", "csv", "svg"], {"default": "json"}),
-            }
+            },
+            "optional": {
+                "include_point": ("BOOLEAN", {"default": True}),
+                "include_box": ("BOOLEAN", {"default": True}),
+                "include_contour": ("BOOLEAN", {"default": True}),
+            },
         }
 
     RETURN_TYPES = ("TRACKS", "STRING")
@@ -144,34 +148,64 @@ class EasyTracksExport:
     OUTPUT_NODE = True
     CATEGORY = "EasyTrack"
 
-    def export(self, tracks, filename_prefix, format):
+    def export(self, tracks, filename_prefix, format,
+               include_point=True, include_box=True, include_contour=True):
+        sel = (include_point, include_box, include_contour)
         path = os.path.join(_output_dir(), f"{filename_prefix}.{format}")
         if format == "json":
-            with open(path, "w") as f:
-                json.dump(tracks.to_dict(), f)
+            self._write_json(tracks, path, sel)
         elif format == "csv":
-            self._write_csv(tracks, path)
+            self._write_csv(tracks, path, sel)
         elif format == "svg":
-            self._write_svg(tracks, path)
-        print(f"[EasyTrack] exported {format} -> {path}")
+            self._write_svg(tracks, path, sel)
+        print(f"[EasyTrack] exported {format} (point={include_point}, "
+              f"box={include_box}, contour={include_contour}) -> {path}")
         return (tracks, path)
 
     @staticmethod
-    def _write_csv(tracks, path):
-        import csv
-        with open(path, "w", newline="") as f:
-            w = csv.writer(f)
-            w.writerow(["frame", "object_id", "label", "score",
-                        "cx", "cy", "x1", "y1", "x2", "y2", "area", "n_contour_pts"])
-            for fidx, oid, label, det in tracks.iter_rows():
-                cx, cy = (det.point or ["", ""])
-                x1, y1, x2, y2 = det.bbox
-                npts = sum(len(p) for p in det.contour) if det.contour else 0
-                w.writerow([fidx, oid, label, round(det.score, 4),
-                            cx, cy, x1, y1, x2, y2, det.area, npts])
+    def _write_json(tracks, path, sel):
+        inc_pt, inc_box, inc_ct = sel
+        d = tracks.to_dict()
+        for obj in d["objects"].values():
+            for det in obj["frames"].values():
+                if not inc_pt:
+                    det["point"] = None
+                if not inc_box:
+                    det["bbox"] = None
+                if not inc_ct:
+                    det["contour"] = None
+        with open(path, "w") as f:
+            json.dump(d, f)
 
     @staticmethod
-    def _write_svg(tracks, path):
+    def _write_csv(tracks, path, sel):
+        import csv
+        inc_pt, inc_box, inc_ct = sel
+        header = ["frame", "object_id", "label", "score"]
+        if inc_pt:
+            header += ["cx", "cy"]
+        if inc_box:
+            header += ["x1", "y1", "x2", "y2"]
+        header += ["area"]
+        if inc_ct:
+            header += ["n_contour_pts"]
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(header)
+            for fidx, oid, label, det in tracks.iter_rows():
+                row = [fidx, oid, label, round(det.score, 4)]
+                if inc_pt:
+                    row += (det.point or ["", ""])
+                if inc_box:
+                    row += det.bbox
+                row += [det.area]
+                if inc_ct:
+                    row += [sum(len(p) for p in det.contour) if det.contour else 0]
+                w.writerow(row)
+
+    @staticmethod
+    def _write_svg(tracks, path, sel):
+        inc_pt, inc_box, inc_ct = sel
         # one file; each frame is a <g> layer; objects are <polygon>+<rect>+<circle>
         W, H = tracks.width, tracks.height
         lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
@@ -184,16 +218,17 @@ class EasyTracksExport:
             for oid, label, det in by_frame[fidx]:
                 r, g, b = color_for_id(oid)
                 col = f"rgb({r},{g},{b})"
-                if det.contour:
+                if inc_ct and det.contour:
                     for poly in det.contour:
                         pts = " ".join(f"{x},{y}" for x, y in poly)
                         lines.append(f'<polygon points="{pts}" fill="none" '
                                      f'stroke="{col}" stroke-width="2" '
                                      f'data-id="{oid}" data-label="{label}"/>')
-                x1, y1, x2, y2 = det.bbox
-                lines.append(f'<rect x="{x1}" y="{y1}" width="{x2-x1}" height="{y2-y1}" '
-                             f'fill="none" stroke="{col}" stroke-dasharray="4" data-id="{oid}"/>')
-                if det.point:
+                if inc_box:
+                    x1, y1, x2, y2 = det.bbox
+                    lines.append(f'<rect x="{x1}" y="{y1}" width="{x2-x1}" height="{y2-y1}" '
+                                 f'fill="none" stroke="{col}" stroke-dasharray="4" data-id="{oid}"/>')
+                if inc_pt and det.point:
                     lines.append(f'<circle cx="{det.point[0]}" cy="{det.point[1]}" r="3" '
                                  f'fill="{col}" data-id="{oid}"/>')
             lines.append('</g>')
@@ -205,7 +240,7 @@ class EasyTracksExport:
 class EasyTracksLoad:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {"path": ("STRING", {"default": "input/tracks.json"})}}
+        return {"required": {"path": ("STRING", {"default": "output/tracks.json"})}}
 
     RETURN_TYPES = ("TRACKS",)
     RETURN_NAMES = ("tracks",)
@@ -254,9 +289,15 @@ class EasyTracksPreview:
                 if not (0 <= fi < len(out)):
                     continue
                 fr = out[fi]
-                if draw_contours and det.contour:
-                    for poly in det.contour:
-                        cv2.polylines(fr, [np.array(poly, np.int32)], True, color, 2)
+                if draw_contours:
+                    polys = det.contour
+                    if not polys and det.mask_rle is not None:
+                        m = rle_to_mask(det.mask_rle)
+                        if m is not None:
+                            polys = mask_to_contours(m)
+                    for poly in (polys or []):
+                        pts = np.array(poly, np.int32).reshape(-1, 1, 2)
+                        cv2.polylines(fr, [pts], True, color, 2)
                 if draw_boxes:
                     x1, y1, x2, y2 = [int(v) for v in det.bbox]
                     cv2.rectangle(fr, (x1, y1), (x2, y2), color, 1)
