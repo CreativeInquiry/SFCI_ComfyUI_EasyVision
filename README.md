@@ -55,16 +55,16 @@ EasyTrack is the bridge that takes SAM3's findings and writes them down as usabl
 ## 3. How the pieces connect
 
 ```
-   your video ────────────────────────────────────────────┐
-        │                                                  │
-        ▼                                                  │
-  (the native SAM3 chain)                                  │
-   Load Checkpoint(sam3.1) ─model─┐                        │
-   CLIP Text Encode("bee") ─text──┐                        │
-                                  ▼                          │
-                          SAM3 VideoTrack                    │
+   your video ────────────────────────────────────────────────┐
+        │                                                     │
+        ▼                                                     │
+  (the native SAM3 chain)                                     │
+   Load Checkpoint(sam3.1) ─model─┐                           │
+   CLIP Text Encode("bee") ─text──┐                           │
+                                  ▼                           │
+                          SAM3 VideoTrack                     │
                                   │  (SAM3_TRACK_DATA)        │
-                                  ▼                            │
+                                  ▼                           │
    ┌──────────────── EasyTrack starts here ──────────────┐    │
    │     SAM3 Track → Tracks   ── TRACKS ──┬── Tracks Export (json/csv/svg)
    │                                       └── Tracks Preview ◄── (same video)
