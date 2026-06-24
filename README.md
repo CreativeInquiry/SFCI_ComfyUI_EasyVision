@@ -169,6 +169,10 @@ time?" is a direct lookup. Here's the JSON shape:
   need the actual outline.)
 - **SVG** is a vector file where each frame is a layer group containing the
   outlines, boxes, and points, each tagged with its object id and label.
+- **JSX** is an Adobe **After Effects** script. Run it in AE (File > Scripts >
+  Run Script File...) and it builds a composition at your video's size and frame
+  rate, with one **null layer per object**.
+
 
 
 
@@ -238,7 +242,7 @@ re-creating the mask, compositing). Don't need that? Set `store_mask_rle` to
 
 ---
 
-## 6. Two settings worth understanding
+## 6. Some settings worth understanding
 
 **`store_mask_rle` vs `store_contour` —- are they the same?** No.
 - **Contour** is a *simplified outline*: just the outer edge, smoothed. Small
@@ -255,6 +259,39 @@ need outlines.
 higher values give fewer points but round off detail (a fringed wing can become
 a smooth blob). Lower = more faithful, higher = smaller.
 
+
+**`min_area` / `max_area` — the blob size filter.** These remove blobs that are
+too small or too big. A "blob" is one connected patch of mask, and the number is
+the **fraction of the whole frame** that blob covers, from `0` (nothing) to `1`
+(the entire picture). This is the right tool when SAM3 sprinkles tiny specks
+*inside* an object's box: those specks are small blobs, so a `min_area` cutoff
+removes them while the real object (a normal-size blob) stays — and the bounding
+box snaps back tight around it.
+ 
+Think of the frame as 100% of the area, and each blob takes some slice of it:
+ 
+| Slider value | Means a blob covering... |
+|---|---|
+| `1.0` | the whole frame |
+| `0.5` | half the frame |
+| `0.25` | a quarter |
+| `0.01` | 1% of the frame |
+| `0.001` | a tiny speck (0.1%) |
+ 
+- **`min_area`** is the *smallest* a blob may be and still be kept. Anything
+  smaller is dropped. (`0.001` = "ignore specks under 0.1% of the frame.")
+- **`max_area`** is the *largest* a blob may be and still be kept. Anything
+  bigger is dropped. (`0.9` = "ignore blobs swallowing more than 90% of the
+  frame," which are usually pathological.)
+A blob survives only if it sits **between** the two:
+`min_area ≤ blob's share of the frame ≤ max_area`. Under the hood it's just
+`blob_pixels ÷ (width × height)`. The filter looks at every connected blob in
+each object's mask, so it cleans specks *within* an object, not just whole
+objects.
+ 
+**Why fractions instead of pixel counts?** So one setting works on any video
+size. `0.001` means the same relative thing on a phone clip and on 4K footage,
+whereas a pixel number like "500" would mean wildly different things on each.
 ---
 
 ## 7. Installing it
