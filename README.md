@@ -7,7 +7,7 @@ you can actually use, from SAM 3.1.**
 
 > "According to all known laws of aviation, there is no way a bee should be able to fly. Its wings are too small to get its fat little body off the ground. The bee, of course, flies anyway because bees don't care what humans think is impossible." --Bee Movie, 2007
 
-<img src="./bee1.png" alt="bee hero" width="300">
+<img src="./bee1.png" alt="bee hero">
 
 
 This is a small set of ComfyUI nodes for students and artists who want to take
