@@ -3,7 +3,12 @@
 *By Claire Vlases*
 
 **Import a video, follow the objects in it, and get their positions out as data
-you can actually use.**
+you can actually use, from SAM 3.1.**
+
+> "According to all known laws of aviation, there is no way a bee should be able to fly. Its wings are too small to get its fat little body off the ground. The bee, of course, flies anyway because bees don't care what humans think is impossible." --Bee Movie, 2007
+
+<img src="./bee1.png" alt="bee hero" width = 300>
+
 
 This is a small set of ComfyUI nodes for students and artists who want to take
 video, have the computer track objects in it, and
@@ -22,6 +27,8 @@ ComfyUI already includes a very good "detector" called **SAM3**. You give it a
 video and a word ("bee"), and it finds the bee in every frame and even
 remembers that the bee in frame 50 is the *same* bee as in frame 1. That
 "same-bee-over-time" idea is called **tracking**, and SAM3 does it for you.
+
+<img src="./bee-mov.gif" alt="bees" width = 300>
 
 But there's a catch: when SAM3 finishes, it keeps its findings in a form meant
 for *making pictures* (cutting the bee out, masking, compositing). It does
@@ -91,6 +98,9 @@ It bundles all of that into one tidy `TRACKS` object.
 **Settings:** `label` (name the thing, e.g. "bee"), `store_contour`,
 `store_mask_rle`, `contour_simplify` (see §6), `fps`.
 
+<img src="./track-node.png" alt="node1" width = 300>
+
+
 ### Tracks Preview  *("did it work?")*
 **What it does:** draws the point, box, contour, and ID onto the frames so you
 can *see* if the tracking is right.
@@ -101,6 +111,8 @@ shapes on each frame.
 optional** — leave it unconnected and you get a black "debug canvas" at the
 right size with just the shapes on it, handy for checking the geometry alone.
 
+<img src="./preview-node.png" alt="node2" width = 300>
+
 ### Tracks Export  *(save it)*
 **What it does:** writes everything to **one** file you can open elsewhere.
 **Formats:** `json` (complete data), `csv` (a spreadsheet, one row per object
@@ -109,6 +121,8 @@ Illustrator, After Effects, Photoshop).
 **Settings:** `include_point` / `include_box` / `include_contour` let you save
 only the parts you want. It also outputs the file `path` so you know where it
 landed.
+
+<img src="./export-node.png" alt="node3" width = 300>
 
 ### Tracks Load  *(open a saved file)*
 **What it does:** reads a saved `tracks.json` back into a `TRACKS` object, so
@@ -158,7 +172,7 @@ time?" is a direct lookup. Here's the JSON shape:
 
 
 
-### Understanding the scary `mask_rle` string
+### Understanding the `mask_rle` string
  
 The point, box, and contour are all plain numbers. But `mask_rle` looks like
 this:
@@ -219,8 +233,8 @@ re-creating the mask, compositing). Don't need that? Set `store_mask_rle` to
 **off** and the field disappears, making your files much smaller.
  
 
-
-
+<img src="./bee-outline-many.png" alt="lots" width = 300>
+<img src="./bee-outline.png" alt="outline" width = 300>
 
 ---
 
