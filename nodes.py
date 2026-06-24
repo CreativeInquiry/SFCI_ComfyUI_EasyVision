@@ -49,6 +49,35 @@ def _object_score(scores, o):
         return 1.0
 
 
+def filter_blobs_by_area(m, min_frac, max_frac, image_area):
+    """
+    Filter the individual blobs (connected components) inside one mask by size.
+
+    Keeps only blobs whose area is between min_frac and max_frac of the whole
+    image area. This removes specks that are too small (e.g. < 0.001) AND
+    pathological blobs that are too large (e.g. > 0.9) — including stray
+    fragments SAM3 tucked inside an object's box. The object's real blob, which
+    sits between the thresholds, is kept.
+
+    min_frac / max_frac are fractions of the image area (0..1). Returns the
+    cleaned mask (union of the kept blobs), or all zeros if none qualify.
+    """
+    if min_frac <= 0.0 and max_frac >= 1.0:
+        return m  # nothing to filter
+    import cv2
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    if n <= 1:
+        return m
+    lo = min_frac * image_area
+    hi = max_frac * image_area
+    out = np.zeros_like(m)
+    for i in range(1, n):                       # skip background (0)
+        a = int(stats[i, cv2.CC_STAT_AREA])
+        if lo <= a <= hi:
+            out[labels == i] = 1
+    return out
+
+
 def _output_dir():
     try:
         import folder_paths
@@ -71,8 +100,8 @@ class SAM3TrackToTracks:
                 "store_contour": ("BOOLEAN", {"default": True, "tooltip": "Save the traced outline (polygon) of each object. Good for vector tools."}),
                 "store_mask_rle": ("BOOLEAN", {"default": True, "tooltip": "Save the exact pixel mask (lossless, COCO RLE). Turn OFF for much smaller files if you only need point/box/contour."}),
                 "contour_simplify": ("FLOAT", {"default": 0.002, "min": 0.0, "max": 0.05, "step": 0.001, "tooltip": "Outline detail vs file size. 0 = keep every edge point; higher = fewer points, smoother (rounds off detail)."}),
-                "min_area": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001, "display": "slider", "tooltip": "Drop blobs SMALLER than this fraction of the image area. 0 = no minimum. e.g. 0.001 removes specks."}),
-                "max_area": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001, "display": "slider", "tooltip": "Drop blobs LARGER than this fraction of the image area. 1 = no maximum. e.g. 0.9 removes whole-frame blobs."}),
+                "min_area": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001, "display": "slider", "tooltip": "Remove blobs SMALLER than this fraction of the image area. 0 = no minimum. e.g. 0.001 removes specks (incl. stray bits inside an object's box)."}),
+                "max_area": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001, "display": "slider", "tooltip": "Remove blobs LARGER than this fraction of the image area. 1 = no maximum. e.g. 0.9 removes pathological whole-frame blobs."}),
                 "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 1.0, "tooltip": "Frames per second, stored in the output for reference."}),
             },
         }
@@ -111,11 +140,10 @@ class SAM3TrackToTracks:
             bm = (fm > 0.5).cpu().numpy().astype(np.uint8)
             for o in range(N_obj):
                 m = bm[o]
+                # drop blobs (incl. specks inside the mask) outside the size range
+                m = filter_blobs_by_area(m, min_area, max_area, image_area)
                 area = int(m.sum())
                 if area <= 1:
-                    continue
-                frac = area / image_area          # blob size as fraction of frame
-                if frac < min_area or frac > max_area:
                     dropped += 1
                     continue
                 bbox = bbox_from_mask(m)
