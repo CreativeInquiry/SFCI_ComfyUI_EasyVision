@@ -7,7 +7,7 @@ you can actually use, from SAM 3.1.**
 
 > "According to all known laws of aviation, there is no way a bee should be able to fly. Its wings are too small to get its fat little body off the ground. The bee, of course, flies anyway because bees don't care what humans think is impossible." --Bee Movie, 2007
 
-<img src="assets/bee1.png" alt="bee hero" width="300">
+<img src="assets/bee1.jpg" alt="bee hero" width="300">
 
 
 This is a small set of ComfyUI nodes for students and artists who want to take
@@ -233,7 +233,7 @@ re-creating the mask, compositing). Don't need that? Set `store_mask_rle` to
 **off** and the field disappears, making your files much smaller.
  
 
-<img src=".assets/bee-outline-many.png" alt="lots" width="300">
+<img src="assets/bee-outline-many.png" alt="lots" width="300">
 <img src="assets/bee-outline.png" alt="outline" width="300">
 
 ---
