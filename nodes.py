@@ -2,7 +2,7 @@
 nodes.py — EasyTrack nodes on top of ComfyUI's native SAM3 nodes.
 
     SAM3TrackToTracks : SAM3_TRACK_DATA -> TRACKS  (point + box + contour + mask)
-    EasyTracksExport  : TRACKS -> json | csv | svg  (one consolidated file)
+    EasyTracksExport  : TRACKS -> json | csv | svg | jsx  (one consolidated file)
     EasyTracksLoad    : tracks.json -> TRACKS
     EasyTracksPreview : TRACKS + IMAGE -> IMAGE
 """
@@ -100,6 +100,7 @@ class SAM3TrackToTracks:
                 "store_contour": ("BOOLEAN", {"default": True, "tooltip": "Save the traced outline (polygon) of each object. Good for vector tools."}),
                 "store_mask_rle": ("BOOLEAN", {"default": True, "tooltip": "Save the exact pixel mask (lossless, COCO RLE). Turn OFF for much smaller files if you only need point/box/contour."}),
                 "contour_simplify": ("FLOAT", {"default": 0.002, "min": 0.0, "max": 0.05, "step": 0.001, "tooltip": "Outline detail vs file size. 0 = keep every edge point; higher = fewer points, smoother (rounds off detail)."}),
+                "contour_holes": ("BOOLEAN", {"default": False, "tooltip": "Include hole boundaries as contours. OFF = outer outline only (a donut gives one contour). ON = also trace holes (a donut gives two: outer ring + inner hole)."}),
                 "min_area": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001, "display": "slider", "tooltip": "Remove blobs SMALLER than this fraction of the image area. 0 = no minimum. e.g. 0.001 removes specks (incl. stray bits inside an object's box)."}),
                 "max_area": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001, "display": "slider", "tooltip": "Remove blobs LARGER than this fraction of the image area. 1 = no maximum. e.g. 0.9 removes pathological whole-frame blobs."}),
                 "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 1.0, "tooltip": "Frames per second, stored in the output for reference."}),
@@ -117,7 +118,8 @@ class SAM3TrackToTracks:
                    "or export. This is the bridge that gets data out of SAM3.")
 
     def convert(self, track_data, label="", store_contour=True, store_mask_rle=True,
-                contour_simplify=0.002, min_area=0.0, max_area=1.0, fps=24.0):
+                contour_simplify=0.002, contour_holes=False,
+                min_area=0.0, max_area=1.0, fps=24.0):
         import torch.nn.functional as F
         from comfy.ldm.sam3.tracker import unpack_masks
 
@@ -152,7 +154,7 @@ class SAM3TrackToTracks:
                 det = FrameDet(
                     bbox=bbox,
                     point=centroid_from_mask(m),
-                    contour=(mask_to_contours(m, contour_simplify) if store_contour else None),
+                    contour=(mask_to_contours(m, contour_simplify, contour_holes) if store_contour else None),
                     area=area,
                     score=_object_score(scores, o),
                     visible=True,
@@ -167,7 +169,7 @@ class SAM3TrackToTracks:
         return (tracks,)
 
 
-# ---- 3) export: one consolidated file, json | csv | svg ---------------------
+# ---- 2) export: one consolidated file, json | csv | svg | jsx ---------------------
 
 class EasyTracksExport:
     @classmethod
@@ -336,6 +338,7 @@ class EasyTracksExport:
         with open(path, "w") as f:
             f.write("\n".join(L))
 
+# ---- 3) load: load in an existing json file ---------------------
 
 class EasyTracksLoad:
     @classmethod

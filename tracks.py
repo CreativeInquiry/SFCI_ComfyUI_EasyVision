@@ -58,15 +58,20 @@ def centroid_from_mask(m: np.ndarray):
     return [round(float(xs.mean()), 2), round(float(ys.mean()), 2)]
 
 
-def mask_to_contours(m: np.ndarray, epsilon_frac: float = 0.0):
+def mask_to_contours(m, epsilon_frac: float = 0.0, include_holes: bool = False):
     """
     uint8 HxW -> list of polygons; each polygon is [[x,y], [x,y], ...].
+
+    include_holes=False uses cv2.RETR_EXTERNAL (outer outline only — a donut
+    gives ONE contour). include_holes=True uses cv2.RETR_LIST, which also returns
+    inner hole boundaries (a donut gives TWO: the outer ring and the hole).
+
     epsilon_frac>0 simplifies via Douglas-Peucker (fraction of perimeter),
     which keeps files small for vector tools. Returns [] if no contour.
     """
     import cv2
-    contours, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_SIMPLE)
+    mode = cv2.RETR_LIST if include_holes else cv2.RETR_EXTERNAL
+    contours, _ = cv2.findContours(m.astype(np.uint8), mode, cv2.CHAIN_APPROX_SIMPLE)
     polys = []
     for c in contours:
         if epsilon_frac and len(c) > 2:
