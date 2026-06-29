@@ -1011,6 +1011,8 @@ class EasyTracksPreview:
                 "draw_points": ("BOOLEAN", {"default": True, "tooltip": "Draw the center dot."}),
                 "draw_tracks": ("BOOLEAN", {"default": True, "tooltip": "Draw CoTracker point trajectories (track_points): a dot per tracked point, dim where the point is hidden."}),
                 "draw_ids": ("BOOLEAN", {"default": True, "tooltip": "Draw each object's id and label."}),
+                "track_point_size": ("INT", {"default": 4, "min": 1, "max": 20,
+                    "tooltip": "Radius in pixels of each CoTracker dot. Raise this if the dots are hard to see."}),
             },
             "optional": {
                 # leave unconnected for a black debug canvas sized to the tracks
@@ -1027,7 +1029,8 @@ class EasyTracksPreview:
                    "see if it's correct. Leave 'images' unconnected to draw on a black debug "
                    "canvas instead of the footage. The four switches let you show any combination.")
 
-    def render(self, tracks, draw_boxes, draw_contours, draw_points, draw_tracks, draw_ids, images=None):
+    def render(self, tracks, draw_boxes, draw_contours, draw_points, draw_tracks, draw_ids,
+               track_point_size=4, images=None):
         import cv2
         if images is not None:
             out = [f.copy() for f in comfy_to_frames(images)]
@@ -1037,6 +1040,7 @@ class EasyTracksPreview:
             W = max(int(tracks.width), 1)
             n = max(int(tracks.num_frames), 1)
             out = [np.zeros((H, W, 3), np.uint8) for _ in range(n)]
+        pt_r = max(int(track_point_size), 1)
         for oid, obj in tracks.objects.items():
             color = color_for_id(oid)
             for fi, det in obj.frames.items():
@@ -1061,7 +1065,7 @@ class EasyTracksPreview:
                     vis = det.track_visible or [True] * len(det.track_points)
                     for (px, py), v in zip(det.track_points, vis):
                         c = color if v else tuple(int(ch * 0.35) for ch in color)
-                        cv2.circle(fr, (int(px), int(py)), 2, c, -1)
+                        cv2.circle(fr, (int(px), int(py)), pt_r, c, -1)
                 if draw_ids:
                     tag = f"{oid}" + (f" {obj.label}" if obj.label else "")
                     x1, y1 = int(det.bbox[0]), int(det.bbox[1])

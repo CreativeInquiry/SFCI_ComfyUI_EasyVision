@@ -74,6 +74,49 @@ In this repo, that means:
 - **YOLO -> EasyDetect Boxes -> Tracks** is the simpler, box-based detection path.
 - Either of those can then feed **EasyTrack** if you want point-motion on top.
 
+### "But I want to track a bee, and YOLO doesn't know what a bee is"
+
+Standard YOLO models are trained on a fixed list of 80 common objects from a
+dataset called COCO. That list includes people, cars, dogs, cats, and similar
+everyday things. **Bee is not on the list.**
+
+If you try to tell YOLO to look for a bee, it will either:
+- return nothing (because it has never seen a bee in training), or
+- guess wrong and return whatever the closest COCO class looks like
+
+**SAM3 does not have this problem.** SAM3 is open-vocabulary, meaning you can
+type any word into its text box and it will look for that thing. You can type
+"bee" and it will find the bee.
+
+So for tracking custom or unusual objects:
+- Use **SAM3** with a text prompt for the thing you want to track.
+- Use **YOLO** when your object is one of the standard 80 COCO classes, or when
+  you have a custom-trained YOLO model for your specific thing.
+
+### "CoTracker is giving me points all over the image, not just on the bee"
+
+This is expected. When CoTracker runs, it places a **grid of points across the
+entire image** and tracks all of them. Most of those grid points are on the
+background, the flower, the sky -- not on the bee.
+
+CoTracker has no way of knowing what the bee is. It just tracks motion.
+
+The fix is to combine the two:
+
+1. Run **SAM3** first. It finds the bee and gives you its mask.
+2. Feed that SAM3 result into **CoTracker -> Tracks** via the `tracks` input.
+3. The node will look at where each CoTracker point *started*, check if that
+   position falls inside the bee's mask, and keep only those points.
+   Points that started on the background are thrown away.
+
+This combination -- SAM3 to find the object, CoTracker to add dense motion
+on top of it -- is the intended workflow for getting motion-rich data about
+a specific thing.
+
+> **Short version:** CoTracker alone gives you motion everywhere.
+> SAM3 alone gives you the shape of the bee. SAM3 + CoTracker together give you
+> the motion *of the bee*.
+
 <img src="assets/bee-mov.gif" alt="bees" width="300">
 
 There is one more important twist: SAM3 and YOLO do not hand their results to
@@ -167,24 +210,33 @@ If a long SAM3 run is taking too long or hitting memory limits, the safest fixes
 
 <img src="assets/track-node.png" alt="node1" width="300">
 
-**EasyDetect Boxes -> Tracks**  *(YOLO / any box detector)*
+**YOLO Boxes -> Tracks**  *(generic box detector)*
 
-This is the box-based version of the same idea. It takes boxes from a detector
-and turns them into `TRACKS`.
+This is the box-based version of the same idea. It takes boxes from any
+detector and turns them into `TRACKS`.
 
 If the detector already gives object IDs, this node uses them. If not, it uses
 a simple **IoU linker** to guess which box in frame 12 is the same object as a
 box in frame 11.
 
-This path is great when you want a simpler "find the bee here" workflow, even
-if you do not have a full object mask.
+Set `class_names` to a comma-separated list of class names in your model's
+training order (e.g. `person,bicycle,car,...` for COCO) so each detection gets
+a readable label instead of a number.
 
 If a long YOLO run is taking too long or eating memory, the safest fixes are:
 
-- use `boxes_path` instead of pasting one giant JSON string
 - raise `min_score` so weak detections get dropped
 - lower `max_detections_per_frame`
 - raise `frame_stride` for long videos
+
+**Ultralytics YOLO -> Tracks**  *(kadirnar/ComfyUI-YOLO)*
+
+A purpose-built adapter for the kadirnar YOLO node. Wire that node's `BOXES`
+output to `boxes` and its `LABELS` output to `labels`. Set `class_names` to
+your model's class list so integer IDs (0, 3, 47...) become readable names.
+
+Remember: if your object is not in the model's training set (e.g. "bee" is not
+in COCO), YOLO will not detect it. Use SAM3 for custom or unusual objects.
 
 ### Part 2: EasyTrack adds point motion (optional)
 
