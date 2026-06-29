@@ -94,8 +94,13 @@ def _object_det_near_frame(obj, frame_hint):
     return obj.frames[nearest]
 
 
-def assign_to_object(tracks, x, y, frame_hint=0):
-    """Object whose shape near frame_hint contains (x,y); else nearest by centroid."""
+def assign_to_object(tracks, x, y, frame_hint=0, strict=False):
+    """Object whose shape near frame_hint contains (x,y); else nearest by centroid.
+
+    With strict=True only returns an id if (x,y) is actually inside an object's
+    mask or bbox -- never falls back to 'nearest'. Use this to discard stray grid
+    points that don't belong to any detected object.
+    """
     best, best_d = None, None
     for oid in tracks.ids():
         obj = tracks.objects[oid]
@@ -104,11 +109,11 @@ def assign_to_object(tracks, x, y, frame_hint=0):
             continue
         if _det_contains(det, x, y):
             return oid
-        if det.point is not None:
+        if not strict and det.point is not None:
             d = (det.point[0] - x) ** 2 + (det.point[1] - y) ** 2
             if best_d is None or d < best_d:
                 best, best_d = oid, d
-    return best
+    return best  # None when strict=True and no object contained the point
 
 
 # ---- 2) merger: tracking_results -> TRACKS ----------------------------------
@@ -136,6 +141,8 @@ class TrackingResultsToTracks:
                 "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 1.0}),
                 "fill_missing_frames": ("BOOLEAN", {"default": False,
                                                     "tooltip": "Recommended OFF. OFF = only attach point tracks to frames that already exist in the EasyDetect result. ON = create synthetic per-frame detections from the tracked points when needed."}),
+                "discard_unmatched": ("BOOLEAN", {"default": True,
+                                                  "tooltip": "Only applies when a TRACKS is connected. ON (recommended): trajectories whose start point is not inside any known object's mask or box are discarded — keeps stray grid points from polluting your object data. OFF: assign every stray trajectory to the nearest object instead."}),
             },
         }
 
@@ -144,11 +151,13 @@ class TrackingResultsToTracks:
     FUNCTION = "merge"
     CATEGORY = TRACK_CATEGORY
     DESCRIPTION = ("CoTracker -> Tracks. Turns the CoTracker node's tracking_results into a "
-                   "TRACKS. Use it on its own (every trajectory becomes one 'points' object) or "
-                   "feed it a TRACKS to assign each trajectory to the object it starts inside.")
+                   "TRACKS. Use it on its own (each trajectory becomes its own object, so you "
+                   "can see individual point identities) or feed it a TRACKS from SAM3 or YOLO "
+                   "to assign each trajectory to the object whose mask or box it starts inside. "
+                   "discard_unmatched keeps stray grid points from corrupting your object data.")
 
     def merge(self, tracking_results, tracks=None, images=None, label="points", fps=24.0,
-              fill_missing_frames=False):
+              fill_missing_frames=False, discard_unmatched=True):
         trajs = parse_trajectories(tracking_results)
         if not trajs:
             print("[EasyTrack] TrackingResultsToTracks: no trajectories parsed")
@@ -160,13 +169,20 @@ class TrackingResultsToTracks:
             base = tracks.copy()
             building_fresh = False
             groups = {oid: [] for oid in base.ids()}
+            discarded = 0
             for traj in trajs:
                 start_frame, start_point = _first_visible_with_index(traj)
                 sx, sy = start_point
-                oid = assign_to_object(base, sx, sy, frame_hint=start_frame)
+                oid = assign_to_object(base, sx, sy, frame_hint=start_frame, strict=discard_unmatched)
                 if oid is None:
+                    if discard_unmatched:
+                        discarded += 1
+                        continue
                     oid = base.ids()[0]
                 groups[oid].append(traj)
+            if discarded:
+                print(f"[EasyTrack] TrackingResultsToTracks: discarded {discarded} trajectories "
+                      f"that didn't start inside any object (discard_unmatched=True)")
         else:
             if images is not None:
                 H, W, n = int(images.shape[1]), int(images.shape[2]), int(images.shape[0])
@@ -176,8 +192,14 @@ class TrackingResultsToTracks:
                 H = int(max((p[1] for p in allpts), default=1)) + 1
                 n = T
             base = Tracks(height=H, width=W, num_frames=max(n, T), fps=float(fps))
-            base.objects[0] = TrackObject(object_id=0, label=label, score=1.0)
-            groups = {0: trajs}
+            # One object per trajectory so each tracked point has its own identity.
+            # Grouping all trajectories into object 0 produces a bounding box that
+            # spans the entire scene (the extent of every grid point), which is
+            # meaningless. Each trajectory is its own coherent entity.
+            groups = {}
+            for i, traj in enumerate(trajs):
+                base.objects[i] = TrackObject(object_id=i, label=label, score=1.0)
+                groups[i] = [traj]
             building_fresh = True
 
         # When building from scratch (no input TRACKS), there are no detection
@@ -205,7 +227,11 @@ class TrackingResultsToTracks:
                     ys = [p[1] for p, v in zip(pts, vis) if v] or [p[1] for p in pts]
                     bbox = ([int(min(xs)), int(min(ys)), int(max(xs)) + 1, int(max(ys)) + 1]
                             if xs else [0, 0, 0, 0])
-                    det = FrameDet(bbox=bbox, area=0, score=obj.score, visible=any(vis))
+                    # centroid of visible tracked points, so Export/Preview have a
+                    # real point even without a detection mask or box
+                    point = ([round(sum(xs) / len(xs), 2), round(sum(ys) / len(ys), 2)]
+                             if xs else None)
+                    det = FrameDet(bbox=bbox, point=point, area=0, score=obj.score, visible=any(vis))
                     obj.frames[t] = det
                 det.track_points = pts
                 det.track_visible = vis

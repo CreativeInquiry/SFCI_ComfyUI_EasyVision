@@ -123,7 +123,7 @@ class SAM3TrackToTracks:
         return {
             "required": {"track_data": ("SAM3_TRACK_DATA", {"tooltip": "Connect the output of the native SAM3_VideoTrack node here."})},
             "optional": {
-                "label": ("STRING", {"default": "", "tooltip": "Name for the tracked thing (e.g. 'bee'). Blank uses obj0, obj1, ..."}),
+                "label": ("STRING", {"default": "", "tooltip": "Name(s) for the tracked objects. One name applies to all (e.g. 'bee'). A comma-separated list labels each object in SAM3's order (e.g. 'bee,flower,person'). Blank uses obj0, obj1, ..."}),
                 "store_contour": ("BOOLEAN", {"default": True, "tooltip": "Save the traced outline (polygon) of each object. Good for vector tools."}),
                 "store_mask_rle": ("BOOLEAN", {"default": True, "tooltip": "Save the exact pixel mask (lossless, COCO RLE). Turn OFF for much smaller files if you only need point/box/contour."}),
                 "contour_simplify": ("FLOAT", {"default": 0.002, "min": 0.0, "max": 0.05, "step": 0.001, "tooltip": "Outline detail vs file size. 0 = keep every edge point; higher = fewer points, smoother (rounds off detail)."}),
@@ -160,6 +160,15 @@ class SAM3TrackToTracks:
         scores = track_data.get("scores", [])
         image_area = float(max(H * W, 1))
 
+        # Support "bee" (all objects) or "bee,flower,person" (per-object list).
+        label_parts = [l.strip() for l in label.split(",") if l.strip()] if label.strip() else []
+        per_object_labels = "," in label
+
+        def _obj_label(o):
+            if per_object_labels:
+                return label_parts[o] if o < len(label_parts) else f"obj{o}"
+            return label_parts[0] if label_parts else f"obj{o}"
+
         tracks = Tracks(height=H, width=W, num_frames=n_frames, fps=float(fps))
         if packed is None:
             print("[EasyTrack] no objects in track_data")
@@ -192,7 +201,7 @@ class SAM3TrackToTracks:
                     visible=True,
                     mask_rle=(mask_to_rle(m) if store_mask_rle else None),
                 )
-                tracks.add(o, t, det, label=(label or f"obj{o}"),
+                tracks.add(o, t, det, label=_obj_label(o),
                            score=_object_score(scores, o))
                 kept += 1
             del fm
@@ -331,21 +340,40 @@ def _convert_box(b, box_format):
     return [a, c, w, h]             # xyxy: already corners
 
 
-def _norm_box(item, box_format="xyxy"):
-    """Accept [x1,y1,x2,y2(,score)] or {bbox/box:[...], score, label, id}.
-    The 4 box numbers are interpreted per box_format and stored as xyxy."""
+def _norm_box(item, box_format="xyxy", class_names=None):
+    """Accept [x1,y1,x2,y2(,score,class_id)] or {bbox/box:[...], score, label, id}.
+    The 4 box numbers are interpreted per box_format and stored as xyxy.
+    class_names maps integer class ids to readable names (e.g. ['person','car'])."""
     if isinstance(item, dict):
         b = item.get("bbox") or item.get("box")
         if not b or len(b) < 4:
             return None
+        raw_label = item.get("label", item.get("cls", item.get("class_name")))
+        if isinstance(raw_label, (int, float)) and class_names:
+            cls_id = int(raw_label)
+            lbl = class_names[cls_id] if cls_id < len(class_names) else str(cls_id)
+        else:
+            lbl = str(raw_label) if raw_label is not None else None
         return {"bbox": _convert_box(b, box_format),
                 "score": float(item.get("score", item.get("conf", 1.0))),
-                "label": item.get("label", item.get("cls")),
+                "label": lbl,
                 "id": item.get("id")}
     if isinstance(item, (list, tuple)) and len(item) >= 4:
+        # Raw YOLO detect: [cx,cy,w,h,conf,cls_id]        — 6 numbers
+        # Raw YOLO track:  [cx,cy,w,h,conf,cls_id,track_id] — 7 numbers
+        cls_raw = item[5] if len(item) > 5 else None
+        if cls_raw is not None:
+            try:
+                cls_id = int(cls_raw)
+                lbl = class_names[cls_id] if (class_names and cls_id < len(class_names)) else str(cls_id)
+            except (TypeError, ValueError):
+                lbl = str(cls_raw)
+        else:
+            lbl = None
+        track_id = int(item[6]) if len(item) > 6 else None
         return {"bbox": _convert_box(item, box_format),
                 "score": float(item[4]) if len(item) > 4 else 1.0,
-                "label": None, "id": None}
+                "label": lbl, "id": track_id}
     return None
 
 
@@ -422,8 +450,8 @@ def _coerce_boxes_payload(obj):
     return _as_frames(_to_python(obj)), {}
 
 
-def normalize_box_frame(frame_data, min_score=0.0, max_detections_per_frame=0, box_format="xyxy"):
-    dets = [d for d in (_norm_box(x, box_format) for x in (frame_data or [])) if d is not None]
+def normalize_box_frame(frame_data, min_score=0.0, max_detections_per_frame=0, box_format="xyxy", class_names=None):
+    dets = [d for d in (_norm_box(x, box_format, class_names) for x in (frame_data or [])) if d is not None]
     if min_score > 0.0:
         dets = [d for d in dets if float(d.get("score", 1.0)) >= min_score]
     if max_detections_per_frame and len(dets) > max_detections_per_frame:
@@ -469,7 +497,8 @@ class BoxesToTracks:
                 "link": ("BOOLEAN", {"default": True, "tooltip": "Assign stable IDs across frames with an IoU linker. Ignored if your boxes already carry 'id' (e.g. YOLO track mode)."}),
                 "iou_thresh": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "How much two boxes must overlap to count as the same object."}),
                 "max_age": ("INT", {"default": 10, "min": 0, "max": 300, "tooltip": "Frames an object may vanish for before its ID is retired."}),
-                "label": ("STRING", {"default": "object", "tooltip": "Default label when a box doesn't carry one."}),
+                "label": ("STRING", {"default": "object", "tooltip": "Default label when a box doesn't carry one. Ignored if class_names is provided and the detector emits a class id."}),
+                "class_names": ("STRING", {"default": "", "tooltip": "YOLO class names in order, comma-separated (e.g. 'person,bicycle,car,...'). When your YOLO detector adds a class index to each box (the 6th number), this maps it to a readable name. Leave blank to show the raw class number instead."}),
                 "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 1.0}),
             },
         }
@@ -481,19 +510,22 @@ class BoxesToTracks:
     DESCRIPTION = ("Turn boxes from any detector (YOLO, etc.) into TRACKS. Wire the detector's "
                    "box output into boxes_data (or paste/point at a file), set box_format to match "
                    "(cxcywh for raw YOLO), and it adds stable IDs across frames with an IoU linker "
-                   "or uses the IDs your detector provides.")
+                   "or uses the IDs your detector provides. Set class_names to the YOLO model's "
+                   "class list so detections are labeled 'person', 'car', etc. instead of numbers.")
 
     def convert(self, boxes_data=None, boxes="", box_format="xyxy", boxes_path="",
                 images=None, width=0, height=0,
                 min_score=0.25, max_detections_per_frame=50, frame_stride=1,
                 max_frames=0, link=True, iou_thresh=0.3, max_age=10,
-                label="object", fps=24.0):
+                label="object", class_names="", fps=24.0):
         # priority: a wired boxes_data, then a file path, then pasted text
         if boxes_data is not None:
             raw_frames, meta = _coerce_boxes_payload(boxes_data)
         else:
             raw_frames, meta = load_box_payload(boxes, boxes_path)
         used_indices = selected_frame_indices(len(raw_frames), frame_stride, max_frames)
+
+        name_list = [n.strip() for n in class_names.split(",") if n.strip()] if class_names.strip() else None
 
         # figure out frame size
         H = int(height or meta.get("height") or 0)
@@ -506,7 +538,7 @@ class BoxesToTracks:
         if (not H or not W) and raw_frames:             # infer from filtered box extents
             maxx, maxy = 1.0, 1.0
             for fi in used_indices:
-                dets = normalize_box_frame(raw_frames[fi], min_score, max_detections_per_frame, box_format)
+                dets = normalize_box_frame(raw_frames[fi], min_score, max_detections_per_frame, box_format, name_list)
                 for d in dets:
                     maxx = max(maxx, d["bbox"][2])
                     maxy = max(maxy, d["bbox"][3])
@@ -520,7 +552,7 @@ class BoxesToTracks:
         kept_total = 0
 
         for fi in used_indices:
-            dets = normalize_box_frame(raw_frames[fi], min_score, max_detections_per_frame, box_format)
+            dets = normalize_box_frame(raw_frames[fi], min_score, max_detections_per_frame, box_format, name_list)
             if not dets:
                 continue
             have_ids = all(d["id"] is not None for d in dets)
@@ -550,6 +582,163 @@ class BoxesToTracks:
               f"(frames read {len(used_indices)}/{len(raw_frames)}, kept {kept_total} boxes, "
               f"min_score={min_score}, max_per_frame={max_detections_per_frame}, "
               f"frame_stride={frame_stride})")
+        return (tracks,)
+
+
+# ---- shadowcz007/comfyui-ultralytics-yolo -> TRACKS -------------------------
+# That node outputs 'grids' (boxes) and 'labels' (strings) as separate outputs,
+# so BoxesToTracks can't wire them together. This adapter takes both at once.
+
+def _ul_grids_to_frames(grids):
+    """Parse the 'grids' output from comfyui-ultralytics-yolo into
+    a list-of-frames, each frame a list of [x1,y1,x2,y2[,conf]] boxes."""
+    if grids is None:
+        return []
+    if not isinstance(grids, (list, tuple)):
+        grids = [grids]
+    frames = []
+    for item in grids:
+        if item is None:
+            frames.append([])
+            continue
+        if hasattr(item, "detach"):
+            item = item.detach().cpu().tolist()
+        elif hasattr(item, "tolist") and not isinstance(item, (list, tuple)):
+            item = item.tolist()
+        if not isinstance(item, (list, tuple)) or not item:
+            frames.append([])
+            continue
+        first = item[0]
+        if isinstance(first, (int, float)):
+            # flat list = single box
+            frames.append([[float(v) for v in item]] if len(item) >= 4 else [])
+        else:
+            boxes = []
+            for b in item:
+                if hasattr(b, "tolist"):
+                    b = b.tolist()
+                if isinstance(b, (list, tuple)) and len(b) >= 4:
+                    boxes.append([float(v) for v in b])
+            frames.append(boxes)
+    return frames
+
+
+def _ul_labels_to_frames(labels):
+    """Parse the 'labels' output from comfyui-ultralytics-yolo into
+    a list-of-frames, each frame a list of string class names."""
+    if labels is None:
+        return []
+    if isinstance(labels, str):
+        return [[labels]]
+    if not isinstance(labels, (list, tuple)) or not labels:
+        return []
+    first = labels[0]
+    if isinstance(first, str):
+        return [list(labels)]   # flat list = single frame
+    if isinstance(first, (list, tuple)):
+        return [[str(l) for l in frame] for frame in labels]
+    return []
+
+
+class UltralyticsYOLOToTracks:
+    """
+    Adapter for shadowcz007/comfyui-ultralytics-yolo.
+
+    That node outputs bounding boxes ('grids') and class names ('labels') as
+    two separate outputs. Wire both here. Class names come from the YOLO model
+    directly, so no class_names list is needed. The IoU linker assigns stable
+    ids across frames so each detection has a coherent identity.
+
+    Set box_format to match the node's coordinate system (xyxy is Ultralytics'
+    default).
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "grids": (any_type, {"tooltip": "Wire the Ultralytics YOLO node's 'grids' output here (bounding box coordinates, one list per frame)."}),
+                "labels": (any_type, {"tooltip": "Wire the Ultralytics YOLO node's 'labels' output here (class names as strings, e.g. 'person', 'car', one list per frame)."}),
+            },
+            "optional": {
+                "images": ("IMAGE", {"tooltip": "The original video frames. Used to read frame size."}),
+                "box_format": (["xyxy", "xywh", "cxcywh"], {"default": "xyxy",
+                    "tooltip": "Coordinate format of the grids output. Ultralytics uses xyxy by default."}),
+                "min_score": ("FLOAT", {"default": 0.25, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Drop detections with confidence below this. The grids may carry a 5th number for confidence."}),
+                "link": ("BOOLEAN", {"default": True,
+                    "tooltip": "Assign stable IDs across frames with an IoU linker. Turn OFF only if each frame is independent."}),
+                "iou_thresh": ("FLOAT", {"default": 0.3, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "How much two boxes must overlap to count as the same object across frames."}),
+                "max_age": ("INT", {"default": 10, "min": 0, "max": 300,
+                    "tooltip": "Frames an object can vanish for before its ID is retired."}),
+                "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 1.0}),
+            },
+        }
+
+    RETURN_TYPES = ("TRACKS",)
+    RETURN_NAMES = ("tracks",)
+    FUNCTION = "convert"
+    CATEGORY = DETECT_CATEGORY
+    DESCRIPTION = ("Adapter for shadowcz007/comfyui-ultralytics-yolo. Wire 'grids' (bounding "
+                   "boxes) and 'labels' (string class names) from that node. Class names come "
+                   "from the YOLO model itself — no class_names list needed here. Use "
+                   "BoxesToTracks for other YOLO nodes that bundle labels into the box tensor.")
+
+    def convert(self, grids, labels, images=None, box_format="xyxy",
+                min_score=0.25, link=True, iou_thresh=0.3, max_age=10, fps=24.0):
+        box_frames = _ul_grids_to_frames(grids)
+        lbl_frames = _ul_labels_to_frames(labels)
+        n_frames = max(len(box_frames), len(lbl_frames), 1)
+
+        H, W = 1, 1
+        if images is not None:
+            n_frames = max(n_frames, int(images.shape[0]))
+            H, W = int(images.shape[1]), int(images.shape[2])
+        elif box_frames:
+            flat = [b for f in box_frames for b in f]
+            if flat:
+                W = max(int(math.ceil(max(b[2] for b in flat))), 1)
+                H = max(int(math.ceil(max(b[3] for b in flat))), 1)
+
+        tracks = Tracks(height=int(H), width=int(W),
+                        num_frames=n_frames, fps=float(fps))
+        linker = IoULinker(iou_thresh, max_age) if link else None
+        next_id, kept = 0, 0
+
+        for fi in range(n_frames):
+            raw_boxes = box_frames[fi] if fi < len(box_frames) else []
+            raw_labels = lbl_frames[fi] if fi < len(lbl_frames) else []
+            if not raw_boxes:
+                continue
+            dets = []
+            for j, box in enumerate(raw_boxes):
+                score = float(box[4]) if len(box) > 4 else 1.0
+                if score < min_score:
+                    continue
+                xy = _convert_box(box[:4], box_format)
+                dets.append({"bbox": xy, "label": raw_labels[j] if j < len(raw_labels) else "",
+                             "score": score})
+
+            if linker is not None:
+                ids = linker.update(fi, [d["bbox"] for d in dets])
+            else:
+                ids = list(range(next_id, next_id + len(dets)))
+                next_id += len(dets)
+
+            for d, oid in zip(dets, ids):
+                x1, y1, x2, y2 = d["bbox"]
+                tracks.add(int(oid), fi, FrameDet(
+                    bbox=[x1, y1, x2, y2],
+                    point=[round((x1 + x2) / 2, 2), round((y1 + y2) / 2, 2)],
+                    area=int(max(x2 - x1, 0) * max(y2 - y1, 0)),
+                    score=d["score"],
+                    visible=True,
+                ), label=d["label"], score=d["score"])
+                kept += 1
+
+        print(f"[EasyTrack] UltralyticsYOLOToTracks -> {tracks!r} "
+              f"(kept {kept} detections across {n_frames} frames)")
         return (tracks,)
 
 
@@ -621,6 +810,9 @@ class EasyTracksExport:
     def _write_csv(tracks, path, sel):
         import csv
         inc_pt, inc_box, inc_ct = sel
+        # Check whether any detection has CoTracker motion data so we can add
+        # those columns without making every row inconsistent.
+        has_track_pts = any(det.track_points for _, _, _, det in tracks.iter_rows())
         header = ["frame", "object_id", "label", "score"]
         if inc_pt:
             header += ["cx", "cy"]
@@ -629,6 +821,10 @@ class EasyTracksExport:
         header += ["area"]
         if inc_ct:
             header += ["n_contour_pts"]
+        if has_track_pts:
+            # track_cx/track_cy: centroid of all visible tracked points for this
+            # object at this frame (the motion trajectory, from CoTracker).
+            header += ["track_cx", "track_cy", "n_track_pts"]
         with open(path, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(header)
@@ -641,15 +837,52 @@ class EasyTracksExport:
                 row += [det.area]
                 if inc_ct:
                     row += [sum(len(p) for p in det.contour) if det.contour else 0]
+                if has_track_pts:
+                    tpts = det.track_points or []
+                    tvis = det.track_visible or [True] * len(tpts)
+                    vis_pts = [p for p, v in zip(tpts, tvis) if v] or tpts
+                    if vis_pts:
+                        tcx = round(sum(p[0] for p in vis_pts) / len(vis_pts), 2)
+                        tcy = round(sum(p[1] for p in vis_pts) / len(vis_pts), 2)
+                        row += [tcx, tcy, len(tpts)]
+                    else:
+                        row += ["", "", 0]
                 w.writerow(row)
 
     @staticmethod
     def _write_svg(tracks, path, sel):
         inc_pt, inc_box, inc_ct = sel
-        # one file; each frame is a <g> layer; objects are <polygon>+<rect>+<circle>
+        # One SVG file. Motion trails first (all-frame polylines, back layer), then
+        # per-frame groups on top. All frame groups are visible simultaneously —
+        # this gives an accumulated-motion view useful for art, and individual
+        # frames can be toggled with CSS/JS or by hiding <g> layers in Illustrator.
         W, H = tracks.width, tracks.height
         lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
                  f'viewBox="0 0 {W} {H}">']
+
+        # Motion trails: one <polyline> per object connecting centroid across all frames.
+        # Always included — it's the most useful thing for art tools.
+        lines.append('<g id="motion-trails">')
+        for oid in tracks.ids():
+            obj = tracks.objects[oid]
+            trail_pts = []
+            for fi in sorted(obj.frames):
+                det = obj.frames[fi]
+                if det.point:
+                    trail_pts.append(f"{det.point[0]},{det.point[1]}")
+                else:
+                    cx = (det.bbox[0] + det.bbox[2]) / 2
+                    cy = (det.bbox[1] + det.bbox[3]) / 2
+                    trail_pts.append(f"{round(cx,2)},{round(cy,2)}")
+            if len(trail_pts) > 1:
+                r, g, b = color_for_id(oid)
+                col = f"rgb({r},{g},{b})"
+                obj_label = obj.label or str(oid)
+                lines.append(f'<polyline points="{" ".join(trail_pts)}" fill="none" '
+                             f'stroke="{col}" stroke-width="1.5" opacity="0.55" '
+                             f'data-id="{oid}" data-label="{obj_label}"/>')
+        lines.append('</g>')
+
         by_frame = {}
         for fidx, oid, label, det in tracks.iter_rows():
             by_frame.setdefault(fidx, []).append((oid, label, det))
@@ -664,7 +897,7 @@ class EasyTracksExport:
                         lines.append(f'<polygon points="{pts}" fill="none" '
                                      f'stroke="{col}" stroke-width="2" '
                                      f'data-id="{oid}" data-label="{label}"/>')
-                if inc_box:
+                if inc_box and (det.bbox[2] - det.bbox[0]) > 1:
                     x1, y1, x2, y2 = det.bbox
                     lines.append(f'<rect x="{x1}" y="{y1}" width="{x2-x1}" height="{y2-y1}" '
                                  f'fill="none" stroke="{col}" stroke-dasharray="4" data-id="{oid}"/>')

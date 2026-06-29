@@ -17,6 +17,7 @@ points.py (the CoTracker adapter).
 from .nodes import (
     SAM3TrackToTracks,
     BoxesToTracks,
+    UltralyticsYOLOToTracks,
     EasyTracksExport,
     EasyTracksLoad,
     EasyTracksPreview,
@@ -24,9 +25,10 @@ from .nodes import (
 from .points import TrackingResultsToTracks
 
 NODE_CLASS_MAPPINGS = {
-    # --- three input adapters ---
+    # --- input adapters ---
     "SAM3TrackToTracks": SAM3TrackToTracks,
     "BoxesToTracks": BoxesToTracks,
+    "UltralyticsYOLOToTracks": UltralyticsYOLOToTracks,
     "TrackingResultsToTracks": TrackingResultsToTracks,
     # --- use a TRACKS ---
     "EasyTracksPreview": EasyTracksPreview,
@@ -37,6 +39,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "SAM3TrackToTracks": "SAM3 \u2192 Tracks",
     "BoxesToTracks": "YOLO Boxes \u2192 Tracks",
+    "UltralyticsYOLOToTracks": "Ultralytics YOLO \u2192 Tracks",
     "TrackingResultsToTracks": "CoTracker \u2192 Tracks",
     "EasyTracksPreview": "Tracks Preview",
     "EasyTracksExport": "Tracks Export (json/csv/svg/jsx)",
